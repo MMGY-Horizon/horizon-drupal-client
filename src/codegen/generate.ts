@@ -105,8 +105,9 @@ function gqlTypeToTS(type: TypeRef, schema: IntrospectionSchema): string {
   // Connection types → skip
   if (name.endsWith('Connection') || name.endsWith('Edge')) return 'any'
 
-  // Media union → use any (media fields are handled specially in queries)
-  if (name === 'MediaUnion' || name.startsWith('Media')) return 'any'
+  // Media union → MediaImage type (we only extract mediaImage.url in queries)
+  if (name === 'MediaUnion' || name === 'MediaImage') return 'MediaImage'
+  if (name === 'MediaVideo') return 'MediaVideo'
 
   // Geospatial/Geofield → Geofield type
   if (name === 'Geospatial' || name === 'Geofield') return 'Geofield'

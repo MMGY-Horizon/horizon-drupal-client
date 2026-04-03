@@ -4,7 +4,7 @@
 
 import type { HorizonClient } from 'horizon-drupal-client'
 import type { DrupalNode, DrupalParagraph, DrupalTerm } from 'horizon-drupal-client'
-import type { Text, TextSummary, Image, Link, DateTime, Address, Geofield, DateRange } from 'horizon-drupal-client'
+import type { Text, TextSummary, Image, Link, DateTime, Address, Geofield, DateRange, MediaImage, MediaVideo } from 'horizon-drupal-client'
 import type { QueryOptions } from 'horizon-drupal-client'
 
 // ─── Node Types ────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ export interface NodeArticleDetail extends DrupalNode {
   body?: TextSummary
   csvId?: string
   eyebrowText?: string
-  heroImage?: any
+  heroImage?: MediaImage
   seasons?: TermUnion[]
   tags?: TermUnion[]
   topicTags?: TermUnion[]
@@ -27,7 +27,7 @@ export interface NodeArticlePage extends DrupalNode {
   content?: ParagraphUnion[]
   csvId?: string
   eyebrowText?: string
-  heroImage?: any
+  heroImage?: MediaImage
   seasons?: TermUnion[]
   tags?: TermUnion[]
   topicTags?: TermUnion[]
@@ -40,10 +40,10 @@ export interface NodeBeachDetailPage extends DrupalNode {
   address?: Address
   body?: TextSummary
   csvId?: string
-  galleryImages?: any[]
+  galleryImages?: MediaImage[]
   geofield?: Geofield
-  heroImage?: any
-  image?: any
+  heroImage?: MediaImage
+  image?: MediaImage
   seasons?: TermUnion[]
   tags?: TermUnion[]
   travelerTypes?: TermUnion[]
@@ -59,7 +59,7 @@ export interface NodeBusiness extends DrupalNode {
   email?: string
   geofield?: Geofield
   googleReviews?: string
-  image?: any
+  image?: MediaImage
   mainPhone?: string
   mainWebsite?: string
   noOfReviews?: number
@@ -78,9 +78,9 @@ export interface NodeEventDetail extends DrupalNode {
   csvId?: string
   dateRange?: DateRange[]
   email?: string
-  galleryImages?: any[]
+  galleryImages?: MediaImage[]
   geofield?: Geofield
-  heroImage?: any
+  heroImage?: MediaImage
   mainPhone?: string
   mainWebsite?: string
   seasons?: TermUnion[]
@@ -145,7 +145,7 @@ export interface ParagraphAsideFieldset extends DrupalParagraph {
   badge?: string
   body?: Text
   desktopAspectRatio?: string
-  image?: any
+  image?: MediaImage
   imagePosition?: string
   linkAlignment?: string
   links?: Link[]
@@ -197,7 +197,7 @@ export interface ParagraphCardsFieldset extends DrupalParagraph {
   __typename: 'ParagraphCardsFieldset'
   badge?: string
   body?: Text
-  image?: any
+  image?: MediaImage
   links?: Link[]
   title?: string
 }
@@ -277,7 +277,7 @@ export interface ParagraphListingFieldset extends DrupalParagraph {
   badge?: string
   body?: Text
   eyebrow?: string
-  image?: any
+  image?: MediaImage
   links?: Link[]
   title?: string
 }
@@ -286,7 +286,7 @@ export interface ParagraphMarquee extends DrupalParagraph {
   __typename: 'ParagraphMarquee'
   backgroundColorFieldset?: ParagraphUnion
   container?: string
-  gallery?: any[]
+  gallery?: MediaImage[]
   marqueeDirection?: string
   marqueeSpeed?: string
   showFade?: boolean
@@ -319,7 +319,7 @@ export interface ParagraphPersonFieldset extends DrupalParagraph {
   __typename: 'ParagraphPersonFieldset'
   badge?: string
   body?: Text
-  image?: any
+  image?: MediaImage
   links?: Link[]
   title?: string
 }
@@ -350,7 +350,7 @@ export interface ParagraphPromo extends DrupalParagraph {
   body?: Text
   container?: string
   displayType?: string
-  image?: any
+  image?: MediaImage
   links?: Link[]
   spacingFieldset?: ParagraphUnion
   title?: string
@@ -428,7 +428,7 @@ export interface ParagraphTestimonialFieldset extends DrupalParagraph {
   __typename: 'ParagraphTestimonialFieldset'
   badge?: string
   body?: Text
-  image?: any
+  image?: MediaImage
   title?: string
 }
 
@@ -447,7 +447,7 @@ export interface ParagraphTimelineFieldset extends DrupalParagraph {
   __typename: 'ParagraphTimelineFieldset'
   badge?: string
   body?: Text
-  image?: any
+  image?: MediaImage
   links?: Link[]
   title?: string
 }
@@ -462,7 +462,7 @@ export interface ParagraphVideo extends DrupalParagraph {
   __typename: 'ParagraphVideo'
   container?: string
   title?: string
-  video?: any
+  video?: MediaImage
   videoFieldset?: ParagraphUnion[]
 }
 

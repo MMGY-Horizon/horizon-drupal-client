@@ -65,3 +65,20 @@ export interface DateRange {
   start?: { timestamp: number }
   end?: { timestamp: number }
 }
+
+/** Media image entity (from GraphQL Compose MediaImage type) */
+export interface MediaImage {
+  mediaImage?: {
+    url: string
+    alt?: string
+    width?: number
+    height?: number
+  }
+}
+
+/** Media video entity */
+export interface MediaVideo {
+  mediaVideoFile?: {
+    url: string
+  }
+}

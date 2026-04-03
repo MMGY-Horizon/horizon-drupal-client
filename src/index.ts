@@ -26,7 +26,7 @@ export { HorizonError, NotFoundError } from './errors'
 export type { DrupalNode, DrupalParagraph, DrupalTerm } from './types/base'
 
 // Types — field types
-export type { Text, TextSummary, Image, ImageVariation, Link, DateTime, Address, Geofield, DateRange } from './types/fields'
+export type { Text, TextSummary, Image, ImageVariation, Link, DateTime, Address, Geofield, DateRange, MediaImage, MediaVideo } from './types/fields'
 
 // Types — client config
 export type { ClientConfig, QueryOptions } from './types/client'
