@@ -804,6 +804,48 @@ export interface TypedClient {
 }
 
 
+// ─── Dealias helper ────────────────────────────────────────────────
+
+/**
+ * Recursively strip alias prefixes from response keys.
+ * Converts "card_title" → "title", "card_displayType" → "displayType", etc.
+ * Aliases follow the pattern: {typeName}_{fieldName} where typeName comes
+ * from the __typename (e.g. ParagraphCard → "card").
+ */
+function dealiasResponse(obj: any): any {
+  if (obj === null || obj === undefined) return obj
+  if (Array.isArray(obj)) return obj.map(dealiasResponse)
+  if (typeof obj !== 'object') return obj
+
+  const result: any = {}
+  // Determine prefix from __typename if present
+  const typeName = obj.__typename as string | undefined
+  let prefix = ''
+  if (typeName?.startsWith('Paragraph')) {
+    const base = typeName.replace('Paragraph', '')
+    prefix = base.charAt(0).toLowerCase() + base.slice(1) + '_'
+  }
+
+  for (const [key, value] of Object.entries(obj)) {
+    // Strip alias prefix if it matches this type's prefix
+    let cleanKey = key
+    if (prefix && key.startsWith(prefix)) {
+      cleanKey = key.slice(prefix.length)
+    }
+    // Also strip any other common alias patterns (prefix_field format)
+    if (cleanKey === key && key.includes('_') && !key.startsWith('__')) {
+      const underscoreIdx = key.indexOf('_')
+      const possibleField = key.slice(underscoreIdx + 1)
+      // Only strip if the part before _ looks like a type prefix (lowercase start)
+      if (key.charAt(0) === key.charAt(0).toLowerCase() && possibleField.length > 0) {
+        cleanKey = possibleField
+      }
+    }
+    result[cleanKey] = dealiasResponse(value)
+  }
+  return result
+}
+
 // ─── Factory ───────────────────────────────────────────────────────
 
 export function createTypedClient(client: HorizonClient): TypedClient {
@@ -826,7 +868,8 @@ export function createTypedClient(client: HorizonClient): TypedClient {
       return client.queryByPath(path, ROUTE_QUERY)
     },
     async getPage(path) {
-      return client.queryByPath(path, PAGE_QUERY)
+      const entity = await client.queryByPath(path, PAGE_QUERY)
+      return entity ? dealiasResponse(entity) : null
     },
     async raw(query, variables) {
       return client.query(query, variables)
