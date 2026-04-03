@@ -255,8 +255,16 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
   // e.g. "basicFieldset" field → look for ParagraphBasicFieldset in the union
   if (schemaType.kind === 'UNION' && schemaType.possibleTypes?.some(pt => pt.name.startsWith('Paragraph'))) {
     // Infer expected type from field name: "basicFieldset" → "ParagraphBasicFieldset"
-    const expectedName = `Paragraph${field.name.charAt(0).toUpperCase()}${field.name.slice(1)}`
+    const baseName = field.name.charAt(0).toUpperCase() + field.name.slice(1)
+    const expectedName = `Paragraph${baseName}`
+    // Try multiple matching strategies for naming mismatches (e.g. "accordionItems" → ParagraphAccordionItem)
     const matchedType = schemaType.possibleTypes.find(pt => pt.name === expectedName)
+      // Strip trailing 's' for plural fields: "accordionItems" → ParagraphAccordionItem
+      || schemaType.possibleTypes.find(pt => pt.name === expectedName.replace(/s$/, ''))
+      // Try adding "Fieldset" suffix: "testimonials" → ParagraphTestimonialFieldset
+      || schemaType.possibleTypes.find(pt => pt.name === expectedName.replace(/s$/, 'Fieldset'))
+      // Case-insensitive partial match as last resort
+      || schemaType.possibleTypes.find(pt => pt.name.toLowerCase().startsWith(`paragraph${field.name.replace(/s$/, '').toLowerCase()}`))
 
     if (matchedType) {
       // Only expand the specific expected fieldset type
@@ -282,6 +290,9 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
     }
 
     // Fallback: just get __typename for unknown paragraph unions
+    // Log a warning so developers can identify broken fields
+    const possibleNames = schemaType.possibleTypes?.map(pt => pt.name).join(', ') ?? 'none'
+    console.warn(`⚠️  Codegen: Could not find matching paragraph type for field "${field.name}" (tried Paragraph${baseName}, Paragraph${baseName.replace(/s$/, '')}, Paragraph${baseName.replace(/s$/, 'Fieldset')}). Available types: ${possibleNames}. This field will only return __typename — nested data will be missing.`)
     return `${alias}${field.name} { __typename }`
   }
 

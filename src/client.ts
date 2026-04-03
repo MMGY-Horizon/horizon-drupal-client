@@ -40,6 +40,14 @@ export class HorizonClient {
     }
 
     if (json.errors?.length) {
+      // If we have partial data alongside errors, log warnings but return data
+      if (json.data) {
+        for (const err of json.errors) {
+          const path = err.path ? ` at ${err.path.join('.')}` : ''
+          console.warn(`⚠️  GraphQL warning${path}: ${err.message}`)
+        }
+        return json.data as T
+      }
       throw new HorizonError(json.errors)
     }
 
