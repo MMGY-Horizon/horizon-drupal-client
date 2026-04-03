@@ -235,16 +235,25 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
     return `${alias}${field.name} { ... on MediaImage { mediaImage { url } } ... on MediaVideo { mediaVideoFile { url } } }`
   }
 
-  // Object type (e.g. Text, Address, Geofield) — expand scalars only
+  // Object type (e.g. Text, Address, Geofield, DateRange) — expand with one level of recursion
   if (schemaType.kind === 'OBJECT') {
     const subFields = (schemaType.fields ?? [])
       .filter(f => !SKIP_FIELDS.has(f.name) && !f.args?.length)
-      .filter(f => {
+      .map(f => {
         const n = unwrapTypeName(f.type)
         const t = schema.types.find(s => s.name === n)
-        return !t || t.kind === 'SCALAR' || t.kind === 'ENUM'
+        if (!t || t.kind === 'SCALAR' || t.kind === 'ENUM') return f.name
+        // Recurse one level for nested objects (e.g. DateRange.start → DateTime { timestamp })
+        if (t.kind === 'OBJECT') {
+          const innerScalars = (t.fields ?? [])
+            .filter(sf => !SKIP_FIELDS.has(sf.name) && !sf.args?.length)
+            .filter(sf => { const sn = unwrapTypeName(sf.type); const st = schema.types.find(s => s.name === sn); return !st || st.kind === 'SCALAR' || st.kind === 'ENUM' })
+            .map(sf => sf.name)
+          return innerScalars.length > 0 ? `${f.name} { ${innerScalars.join(' ')} }` : null
+        }
+        return null
       })
-      .map(f => f.name)
+      .filter(Boolean)
 
     return subFields.length > 0
       ? `${alias}${field.name} { ${subFields.join(' ')} }`
@@ -437,8 +446,11 @@ export function generateClientCode(schema: IntrospectionSchema): string {
   lines.push('export const QUERIES: Record<ContentTypeName, { list: string; single: string }> = {')
 
   for (const type of nodeTypes) {
-    // Derive plural name: NodeArticleDetail → nodeArticleDetails
-    const plural = `${type.name.charAt(0).toLowerCase()}${type.name.slice(1)}s`
+    // Derive plural name: NodeArticleDetail → nodeArticleDetails, NodeBusiness → nodeBusinesses
+    const base = `${type.name.charAt(0).toLowerCase()}${type.name.slice(1)}`
+    const plural = base.endsWith('s') || base.endsWith('sh') || base.endsWith('ch') || base.endsWith('x') || base.endsWith('z')
+      ? `${base}es`
+      : `${base}s`
 
     const customFields = (type.fields ?? [])
       .filter(f => !SKIP_FIELDS.has(f.name) && !BASE_NODE_FIELDS.has(f.name))
