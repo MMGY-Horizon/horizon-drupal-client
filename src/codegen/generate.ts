@@ -204,22 +204,34 @@ function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number,
  * Uses a flat strategy: expands fieldset children with scalar fields only,
  * uses simplified patterns for media/term unions.
  */
-function buildParagraphFieldSelection(field: IntrospectionField, schema: IntrospectionSchema): string {
+function buildParagraphFieldSelection(field: IntrospectionField, schema: IntrospectionSchema, aliasPrefix?: string): string {
   const typeName = unwrapTypeName(field.type)
   const schemaType = schema.types.find(t => t.name === typeName)
 
   if (!schemaType || schemaType.kind === 'SCALAR' || schemaType.kind === 'ENUM') {
+    // Alias scalar fields to avoid union conflicts (e.g. card_displayType: displayType)
+    if (aliasPrefix && field.name !== 'id') {
+      return `${aliasPrefix}_${field.name}: ${field.name}`
+    }
     return field.name
+  }
+
+  // Use alias for non-scalar fields too to prevent union conflicts
+  const alias = aliasPrefix && field.name !== 'id' ? `${aliasPrefix}_${field.name}: ` : ''
+
+  // Node union → basic node fields
+  if (schemaType.kind === 'UNION' && schemaType.possibleTypes?.some(pt => pt.name.startsWith('Node'))) {
+    return `${alias}${field.name} { ... on NodeInterface { id title path } }`
   }
 
   // Term union → simple name
   if (isTermUnion(field.type, schema)) {
-    return `${field.name} { ... on TermInterface { name } }`
+    return `${alias}${field.name} { ... on TermInterface { name } }`
   }
 
   // Media union → image url
   if (isMediaUnion(field.type, schema)) {
-    return `${field.name} { ... on MediaImage { mediaImage { url } } ... on MediaVideo { mediaVideoFile { url } } }`
+    return `${alias}${field.name} { ... on MediaImage { mediaImage { url } } ... on MediaVideo { mediaVideoFile { url } } }`
   }
 
   // Object type (e.g. Text, Address, Geofield) — expand scalars only
@@ -234,8 +246,8 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
       .map(f => f.name)
 
     return subFields.length > 0
-      ? `${field.name} { ${subFields.join(' ')} }`
-      : field.name
+      ? `${alias}${field.name} { ${subFields.join(' ')} }`
+      : (aliasPrefix && field.name !== 'id' ? `${aliasPrefix}_${field.name}: ${field.name}` : field.name)
   }
 
   // Paragraph union — use naming convention to find the expected fieldset type
@@ -264,15 +276,15 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
             return null
           })
           .filter(Boolean)
-        return `${field.name} { ... on ${matchedType.name} { ${subFields.join(' ')} } }`
+        return `${alias}${field.name} { ... on ${matchedType.name} { ${subFields.join(' ')} } }`
       }
     }
 
     // Fallback: just get __typename for unknown paragraph unions
-    return `${field.name} { __typename }`
+    return `${alias}${field.name} { __typename }`
   }
 
-  return field.name
+  return aliasPrefix && field.name !== 'id' ? `${aliasPrefix}_${field.name}: ${field.name}` : field.name
 }
 
 // ── Main generator ───────────────────────────────────────────────────
@@ -514,10 +526,13 @@ export function generateClientCode(schema: IntrospectionSchema): string {
             const pType = schema.types.find(t => t.name === pt.name)
             if (!pType?.fields) return `... on ${pt.name} { __typename id }`
 
+            // Create alias prefix from type name: ParagraphCard → card, ParagraphBasic → basic
+            const prefix = pt.name.replace('Paragraph', '').charAt(0).toLowerCase() + pt.name.replace('Paragraph', '').slice(1)
+
             const pFields = pType.fields
               .filter(f => !SKIP_FIELDS.has(f.name))
               .filter(f => !f.args?.length)
-              .map(f => buildParagraphFieldSelection(f, schema))
+              .map(f => buildParagraphFieldSelection(f, schema, prefix))
               .join(' ')
 
             return `... on ${pt.name} { __typename ${pFields} }`
