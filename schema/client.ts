@@ -14,7 +14,7 @@ export interface NodeArticleDetail extends DrupalNode {
   body?: TextSummary
   csvId?: string
   eyebrowText?: string
-  heroImage?: MediaUnion
+  heroImage?: any
   seasons?: TermUnion[]
   tags?: TermUnion[]
   topicTags?: TermUnion[]
@@ -27,7 +27,7 @@ export interface NodeArticlePage extends DrupalNode {
   content?: ParagraphUnion[]
   csvId?: string
   eyebrowText?: string
-  heroImage?: MediaUnion
+  heroImage?: any
   seasons?: TermUnion[]
   tags?: TermUnion[]
   topicTags?: TermUnion[]
@@ -40,10 +40,10 @@ export interface NodeBeachDetailPage extends DrupalNode {
   address?: Address
   body?: TextSummary
   csvId?: string
-  galleryImages?: MediaUnion[]
-  geofield?: Geospatial
-  heroImage?: MediaUnion
-  image?: MediaUnion
+  galleryImages?: any[]
+  geofield?: Geofield
+  heroImage?: any
+  image?: any
   seasons?: TermUnion[]
   tags?: TermUnion[]
   travelerTypes?: TermUnion[]
@@ -57,9 +57,9 @@ export interface NodeBusiness extends DrupalNode {
   bookingWebsite?: string
   csvId?: string
   email?: string
-  geofield?: Geospatial
+  geofield?: Geofield
   googleReviews?: string
-  image?: MediaUnion
+  image?: any
   mainPhone?: string
   mainWebsite?: string
   noOfReviews?: number
@@ -78,9 +78,9 @@ export interface NodeEventDetail extends DrupalNode {
   csvId?: string
   dateRange?: DateRange[]
   email?: string
-  galleryImages?: MediaUnion[]
-  geofield?: Geospatial
-  heroImage?: MediaUnion
+  galleryImages?: any[]
+  geofield?: Geofield
+  heroImage?: any
   mainPhone?: string
   mainWebsite?: string
   seasons?: TermUnion[]
@@ -145,7 +145,7 @@ export interface ParagraphAsideFieldset extends DrupalParagraph {
   badge?: string
   body?: Text
   desktopAspectRatio?: string
-  image?: MediaUnion
+  image?: any
   imagePosition?: string
   linkAlignment?: string
   links?: Link[]
@@ -197,7 +197,7 @@ export interface ParagraphCardsFieldset extends DrupalParagraph {
   __typename: 'ParagraphCardsFieldset'
   badge?: string
   body?: Text
-  image?: MediaUnion
+  image?: any
   links?: Link[]
   title?: string
 }
@@ -277,7 +277,7 @@ export interface ParagraphListingFieldset extends DrupalParagraph {
   badge?: string
   body?: Text
   eyebrow?: string
-  image?: MediaUnion
+  image?: any
   links?: Link[]
   title?: string
 }
@@ -286,7 +286,7 @@ export interface ParagraphMarquee extends DrupalParagraph {
   __typename: 'ParagraphMarquee'
   backgroundColorFieldset?: ParagraphUnion
   container?: string
-  gallery?: MediaUnion[]
+  gallery?: any[]
   marqueeDirection?: string
   marqueeSpeed?: string
   showFade?: boolean
@@ -319,7 +319,7 @@ export interface ParagraphPersonFieldset extends DrupalParagraph {
   __typename: 'ParagraphPersonFieldset'
   badge?: string
   body?: Text
-  image?: MediaUnion
+  image?: any
   links?: Link[]
   title?: string
 }
@@ -350,7 +350,7 @@ export interface ParagraphPromo extends DrupalParagraph {
   body?: Text
   container?: string
   displayType?: string
-  image?: MediaUnion
+  image?: any
   links?: Link[]
   spacingFieldset?: ParagraphUnion
   title?: string
@@ -428,7 +428,7 @@ export interface ParagraphTestimonialFieldset extends DrupalParagraph {
   __typename: 'ParagraphTestimonialFieldset'
   badge?: string
   body?: Text
-  image?: MediaUnion
+  image?: any
   title?: string
 }
 
@@ -447,7 +447,7 @@ export interface ParagraphTimelineFieldset extends DrupalParagraph {
   __typename: 'ParagraphTimelineFieldset'
   badge?: string
   body?: Text
-  image?: MediaUnion
+  image?: any
   links?: Link[]
   title?: string
 }
@@ -462,7 +462,7 @@ export interface ParagraphVideo extends DrupalParagraph {
   __typename: 'ParagraphVideo'
   container?: string
   title?: string
-  video?: MediaUnion
+  video?: any
   videoFieldset?: ParagraphUnion[]
 }
 
