@@ -459,7 +459,7 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       .map(f => {
         if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
         if (isMediaUnion(f.type, schema)) return `${f.name} { ... on MediaImage { mediaImage { url } } }`
-        return buildFieldSelection(f, schema, 0, 1)
+        return buildFieldSelection(f, schema, 0, 2)
       })
       .join(' ')
 
@@ -504,11 +504,8 @@ export function generateClientCode(schema: IntrospectionSchema): string {
         const tn = unwrapTypeName(f.type)
         const st = schema.types.find(t => t.name === tn)
         if (!st || st.kind === 'SCALAR' || st.kind === 'ENUM') return f.name
-        if (st.kind === 'OBJECT' && (st.fields?.length ?? 0) <= 6) {
-          const scalars = (st.fields ?? []).filter(sf => { const n = unwrapTypeName(sf.type); const t = schema.types.find(s => s.name === n); return !t || t.kind === 'SCALAR' }).map(sf => sf.name)
-          return scalars.length ? `${f.name} { ${scalars.join(' ')} }` : f.name
-        }
-        return f.name
+        // Use buildFieldSelection for proper recursion (handles DateRange → DateTime → timestamp etc.)
+        return buildFieldSelection(f, schema, 0, 2)
       })
       .join(' ')
     const allFields = customFields ? ` ${customFields}` : ''
