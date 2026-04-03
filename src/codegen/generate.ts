@@ -258,13 +258,19 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
     const baseName = field.name.charAt(0).toUpperCase() + field.name.slice(1)
     const expectedName = `Paragraph${baseName}`
     // Try multiple matching strategies for naming mismatches (e.g. "accordionItems" → ParagraphAccordionItem)
-    const matchedType = schemaType.possibleTypes.find(pt => pt.name === expectedName)
-      // Strip trailing 's' for plural fields: "accordionItems" → ParagraphAccordionItem
-      || schemaType.possibleTypes.find(pt => pt.name === expectedName.replace(/s$/, ''))
-      // Try adding "Fieldset" suffix: "testimonials" → ParagraphTestimonialFieldset
-      || schemaType.possibleTypes.find(pt => pt.name === expectedName.replace(/s$/, 'Fieldset'))
+    // Prefer Fieldset types over parent paragraph types (fieldsets have the actual content data)
+    const singularName = expectedName.replace(/s$/, '')
+    const candidates = [
+      // Exact match: "basicFieldset" → ParagraphBasicFieldset
+      schemaType.possibleTypes.find(pt => pt.name === expectedName),
+      // Fieldset suffix (preferred over singular): "testimonials" → ParagraphTestimonialFieldset
+      schemaType.possibleTypes.find(pt => pt.name === singularName + 'Fieldset'),
+      // Strip trailing 's' for plural: "accordionItems" → ParagraphAccordionItem
+      schemaType.possibleTypes.find(pt => pt.name === singularName),
       // Case-insensitive partial match as last resort
-      || schemaType.possibleTypes.find(pt => pt.name.toLowerCase().startsWith(`paragraph${field.name.replace(/s$/, '').toLowerCase()}`))
+      schemaType.possibleTypes.find(pt => pt.name.toLowerCase().startsWith(`paragraph${field.name.replace(/s$/, '').toLowerCase()}`)),
+    ]
+    const matchedType = candidates.find(Boolean) ?? null
 
     if (matchedType) {
       // Only expand the specific expected fieldset type
