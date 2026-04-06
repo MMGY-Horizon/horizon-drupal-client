@@ -63,6 +63,21 @@ function isMediaUnion(type: TypeRef, schema: IntrospectionSchema): boolean {
   return t.possibleTypes.every(pt => pt.name.startsWith('Media'))
 }
 
+/** Build media inline fragments for only the media types present in the schema union */
+function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string {
+  const name = unwrapTypeName(type)
+  const t = schema.types.find(s => s.name === name)
+  const fragments: string[] = []
+  if (t?.possibleTypes) {
+    for (const pt of t.possibleTypes) {
+      if (pt.name === 'MediaImage') fragments.push('... on MediaImage { mediaImage { url } }')
+      if (pt.name === 'MediaVideo') fragments.push('... on MediaVideo { mediaVideoFile { url } }')
+    }
+  }
+  // Fallback if union type not found (shouldn't happen if isMediaUnion passed)
+  return fragments.length > 0 ? fragments.join(' ') : '... on MediaImage { mediaImage { url } }'
+}
+
 const BASE_NODE_FIELDS = new Set(['id', 'title', 'path', 'created', 'changed'])
 
 // ── GraphQL → TypeScript type mapping ────────────────────────────────
@@ -162,7 +177,7 @@ function buildFieldSelection(
 
   // Media union — simplified to MediaImage/MediaVideo
   if (schemaType.kind === 'UNION' && isMediaUnion(field.type, schema)) {
-    return `${field.name} { ... on MediaImage { mediaImage { url } } ... on MediaVideo { mediaVideoFile { url } } }`
+    return `${field.name} { ${buildMediaFragments(field.type, schema)} }`
   }
 
   // Other union types — inline fragments
@@ -232,7 +247,7 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
 
   // Media union → image url
   if (isMediaUnion(field.type, schema)) {
-    return `${alias}${field.name} { ... on MediaImage { mediaImage { url } } ... on MediaVideo { mediaVideoFile { url } } }`
+    return `${alias}${field.name} { ${buildMediaFragments(field.type, schema)} }`
   }
 
   // Object type (e.g. Text, Address, Geofield, DateRange) — expand with one level of recursion
@@ -292,7 +307,7 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
             const fType = schema.types.find(t => t.name === fTypeName)
             if (!fType || fType.kind === 'SCALAR' || fType.kind === 'ENUM') return f.name
             if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
-            if (isMediaUnion(f.type, schema)) return `${f.name} { ... on MediaImage { mediaImage { url } } }`
+            if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
             if (fType.kind === 'OBJECT' && (fType.fields?.length ?? 0) <= 8) {
               const scalars = (fType.fields ?? []).filter(sf => !SKIP_FIELDS.has(sf.name)).filter(sf => { const n = unwrapTypeName(sf.type); const t = schema.types.find(s => s.name === n); return !t || t.kind === 'SCALAR' }).map(sf => sf.name)
               return scalars.length ? `${f.name} { ${scalars.join(' ')} }` : f.name
@@ -458,7 +473,7 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       .filter(f => !f.args?.length)
       .map(f => {
         if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
-        if (isMediaUnion(f.type, schema)) return `${f.name} { ... on MediaImage { mediaImage { url } } }`
+        if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
         return buildFieldSelection(f, schema, 0, 2)
       })
       .join(' ')
@@ -500,7 +515,7 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       .map(f => {
         // Simplified: term → name, media → url, scalars only
         if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
-        if (isMediaUnion(f.type, schema)) return `${f.name} { ... on MediaImage { mediaImage { url } } }`
+        if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
         const tn = unwrapTypeName(f.type)
         const st = schema.types.find(t => t.name === tn)
         if (!st || st.kind === 'SCALAR' || st.kind === 'ENUM') return f.name
