@@ -157,12 +157,21 @@ function buildFieldSelection(
     return field.name
   }
 
-  // Object type — recurse into fields
+  // Object type — recurse into fields. Composite types ALWAYS need a
+  // sub-selection, so we can't fall back to returning `field.name` bare
+  // when the depth gate filters everything out. Scalars are cheap and
+  // always valid, so admit them regardless of depth; gate composites
+  // via isExpandable as before.
   if (schemaType.kind === 'OBJECT') {
     const subFields = (schemaType.fields ?? [])
       .filter(f => !SKIP_FIELDS.has(f.name))
       .filter(f => !f.args?.length)
-      .filter(f => isExpandable(f.type, schema, depth + 1, maxDepth))
+      .filter(f => {
+        const n = unwrapTypeName(f.type)
+        const t = schema.types.find(s => s.name === n)
+        if (!t || t.kind === 'SCALAR' || t.kind === 'ENUM') return true
+        return isExpandable(f.type, schema, depth + 1, maxDepth)
+      })
       .map(f => buildFieldSelection(f, schema, depth + 1, maxDepth))
 
     return subFields.length > 0
@@ -178,6 +187,25 @@ function buildFieldSelection(
   // Media union — simplified to MediaImage/MediaVideo
   if (schemaType.kind === 'UNION' && isMediaUnion(field.type, schema)) {
     return `${field.name} { ${buildMediaFragments(field.type, schema)} }`
+  }
+
+  // Paragraph union — always use the full aliased shape so that same-named
+  // fields across bundles with different nullability can coexist, and so that
+  // composite subfields (Text, Link, DateRange, …) get proper subselections.
+  if (isParagraphUnion(schemaType)) {
+    return `${field.name} { ${buildParagraphUnionBody(schemaType, schema)} }`
+  }
+
+  // Node-reference union — only expand members at the top level. Nested
+  // node references (e.g. NodeDealDetail.business → NodeArticleDetail.business)
+  // collapse to a shallow NodeInterface selection: following them recursively
+  // blows up query size and forces composite subfields past the depth limit,
+  // which leaves them without the required sub-selection.
+  const isNodeUnion = schemaType.kind === 'UNION'
+    && !!schemaType.possibleTypes?.length
+    && schemaType.possibleTypes.every(pt => pt.name.startsWith('Node'))
+  if (isNodeUnion && depth > 0) {
+    return `${field.name} { ... on NodeInterface { id title path } }`
   }
 
   // Other union types — inline fragments
@@ -211,6 +239,42 @@ function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number,
   // Only expand unions at shallow depths
   if (t.kind === 'UNION' && depth <= 1) return true
   return false
+}
+
+/**
+ * Build the selection body for a paragraph union field.
+ *
+ * Always emits the full aliased shape: `... on ParagraphFoo { __typename foo_body: body { value processed format } ... }`.
+ * Per-type aliases sidestep GraphQL's field-merge rule (same unaliased name across
+ * inline fragments must return identical types), and the full subselections satisfy
+ * the "composite types require a selection set" rule.
+ *
+ * This is the ONLY shape we emit for paragraph unions, at any depth. The runtime
+ * dealiasResponse() walks the response recursively and strips the per-type prefixes.
+ */
+function buildParagraphUnionBody(unionType: IntrospectionType, schema: IntrospectionSchema): string {
+  const fragments = (unionType.possibleTypes ?? []).map(pt => {
+    const pType = schema.types.find(t => t.name === pt.name)
+    if (!pType?.fields) return `... on ${pt.name} { __typename id }`
+
+    const base = pt.name.replace('Paragraph', '')
+    const prefix = base.charAt(0).toLowerCase() + base.slice(1)
+
+    const pFields = pType.fields
+      .filter(f => !SKIP_FIELDS.has(f.name))
+      .filter(f => !f.args?.length)
+      .map(f => buildParagraphFieldSelection(f, schema, prefix))
+      .join(' ')
+
+    return `... on ${pt.name} { __typename ${pFields} }`
+  })
+  return fragments.join(' ')
+}
+
+function isParagraphUnion(type: IntrospectionType): boolean {
+  return type.kind === 'UNION'
+    && !!type.possibleTypes?.length
+    && type.possibleTypes.every(pt => pt.name.startsWith('Paragraph'))
 }
 
 // ── Paragraph-specific field builder (conservative) ──────────────────
@@ -563,23 +627,11 @@ export function generateClientCode(schema: IntrospectionSchema): string {
         const contentTypeName = unwrapTypeName(contentField.type)
         const contentUnion = schema.types.find(t => t.name === contentTypeName)
 
-        if (contentUnion?.kind === 'UNION' && contentUnion.possibleTypes) {
-          const fragments = contentUnion.possibleTypes.map(pt => {
-            const pType = schema.types.find(t => t.name === pt.name)
-            if (!pType?.fields) return `... on ${pt.name} { __typename id }`
-
-            // Create alias prefix from type name: ParagraphCard → card, ParagraphBasic → basic
-            const prefix = pt.name.replace('Paragraph', '').charAt(0).toLowerCase() + pt.name.replace('Paragraph', '').slice(1)
-
-            const pFields = pType.fields
-              .filter(f => !SKIP_FIELDS.has(f.name))
-              .filter(f => !f.args?.length)
-              .map(f => buildParagraphFieldSelection(f, schema, prefix))
-              .join(' ')
-
-            return `... on ${pt.name} { __typename ${pFields} }`
-          })
-          contentSelection = `content {\n              ${fragments.join('\n              ')}\n            }`
+        if (contentUnion && isParagraphUnion(contentUnion)) {
+          const body = buildParagraphUnionBody(contentUnion, schema)
+            .split(' ... on ')
+            .join('\n              ... on ')
+          contentSelection = `content {\n              ${body}\n            }`
         }
       }
 

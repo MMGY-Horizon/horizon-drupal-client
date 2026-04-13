@@ -101,7 +101,8 @@ export function createTypedClient(client: HorizonClient): TypedClient {
       return data[key] ?? null
     },
     async getByPath(path) {
-      return client.queryByPath(path, ROUTE_QUERY)
+      const entity = await client.queryByPath(path, ROUTE_QUERY)
+      return entity ? dealiasResponse(entity) : null
     },
     async getPage(path) {
       const entity = await client.queryByPath(path, PAGE_QUERY)
