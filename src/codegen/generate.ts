@@ -142,19 +142,81 @@ function gqlTypeToTS(type: TypeRef, schema: IntrospectionSchema): string {
 
 // ── GraphQL field selection builder ──────────────────────────────────
 
+/**
+ * Always-valid scalar expansion for a composite OBJECT type. Recurses into
+ * nested OBJECTs so composite scalar types like DateRange (start/end are
+ * DateTime OBJECTs, whose fields are scalars) still produce a valid
+ * sub-selection no matter the caller's depth budget.
+ *
+ * This is the fallback used when the primary buildFieldSelection logic would
+ * otherwise emit a bare composite field name — which is invalid GraphQL.
+ */
+function buildCompositeSubselection(
+  type: IntrospectionType,
+  schema: IntrospectionSchema,
+  visited: Set<string> = new Set(),
+): string[] {
+  if (!type.fields || visited.has(type.name)) return []
+  visited.add(type.name)
+
+  const parts: string[] = []
+  for (const f of type.fields) {
+    if (SKIP_FIELDS.has(f.name) || f.args?.length) continue
+    const fTypeName = unwrapTypeName(f.type)
+    const fType = schema.types.find(t => t.name === fTypeName)
+
+    if (!fType || fType.kind === 'SCALAR' || fType.kind === 'ENUM') {
+      parts.push(f.name)
+      continue
+    }
+
+    if (fType.kind === 'OBJECT') {
+      const nested = buildCompositeSubselection(fType, schema, visited)
+      if (nested.length) parts.push(`${f.name} { ${nested.join(' ')} }`)
+      continue
+    }
+
+    // Handle common unions inline so Address/Media fields still resolve.
+    if (fType.kind === 'UNION' && isTermUnion(f.type, schema)) {
+      parts.push(`${f.name} { ... on TermInterface { name } }`)
+      continue
+    }
+    if (fType.kind === 'UNION' && isMediaUnion(f.type, schema)) {
+      parts.push(`${f.name} { ${buildMediaFragments(f.type, schema)} }`)
+      continue
+    }
+    // Other unions: skip in fallback rather than blow up the query.
+  }
+
+  visited.delete(type.name)
+  return parts
+}
+
 function buildFieldSelection(
   field: IntrospectionField,
   schema: IntrospectionSchema,
   depth = 0,
   maxDepth = 2,
 ): string {
-  if (depth > maxDepth) return field.name
-
   const typeName = unwrapTypeName(field.type)
   const schemaType = schema.types.find(t => t.name === typeName)
 
   if (!schemaType || schemaType.kind === 'SCALAR' || schemaType.kind === 'ENUM') {
     return field.name
+  }
+
+  // Past the depth budget, composites still need a sub-selection. Fall back
+  // to a scalar-only expansion rather than emitting a bare composite name
+  // (which is invalid GraphQL).
+  if (depth > maxDepth) {
+    if (schemaType.kind === 'OBJECT') {
+      const fallback = buildCompositeSubselection(schemaType, schema)
+      return fallback.length
+        ? `${field.name} { ${fallback.join(' ')} }`
+        : `${field.name} { __typename }`
+    }
+    // Non-OBJECT composites (UNION/INTERFACE): minimum-valid selection.
+    return `${field.name} { __typename }`
   }
 
   // Object type — recurse into fields. Composite types ALWAYS need a
@@ -174,9 +236,15 @@ function buildFieldSelection(
       })
       .map(f => buildFieldSelection(f, schema, depth + 1, maxDepth))
 
-    return subFields.length > 0
-      ? `${field.name} { ${subFields.join(' ')} }`
-      : field.name
+    if (subFields.length > 0) {
+      return `${field.name} { ${subFields.join(' ')} }`
+    }
+    // Depth gate stripped every child. Emit scalars-only fallback so the
+    // composite still has a valid sub-selection.
+    const fallback = buildCompositeSubselection(schemaType, schema)
+    return fallback.length
+      ? `${field.name} { ${fallback.join(' ')} }`
+      : `${field.name} { __typename }`
   }
 
   // Term union — simplified to TermInterface
