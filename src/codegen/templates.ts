@@ -105,7 +105,26 @@ export function createTypedClient(client: HorizonClient): TypedClient {
       return entity ? dealiasResponse(entity) : null
     },
     async getPage(path) {
-      const entity = await client.queryByPath(path, PAGE_QUERY)
+      // Two-step fetch: probe the entity's __typename with a tiny query,
+      // then run the per-bundle slim PAGE_QUERY variant. Drupal's GraphQL
+      // resolver walks every fragment in the entity { ... } selection even
+      // when only one matches the resolved type, so a single mega-query
+      // containing all bundles' paragraph trees can be 10× slower than a
+      // slim per-bundle query on hosting like Pantheon multidev.
+      //
+      // The probe is ~50ms and Next.js's data cache dedupes it across the
+      // request, so the steady-state cost is one slim query.
+      const probe = await client.query(PAGE_TYPE_PROBE, { path }) as
+        | { route?: { entity?: { __typename?: string } | null } | null }
+        | null
+      const typename = probe?.route?.entity?.__typename
+      const slimQuery = typename ? PAGE_QUERY_BY_TYPE[typename] : undefined
+
+      // Fall back to the legacy mega-query if the type isn't recognized
+      // (e.g. a node bundle that doesn't have a "content" field, or schema
+      // drift between codegen and runtime).
+      const query = slimQuery ?? PAGE_QUERY
+      const entity = await client.queryByPath(path, query)
       return entity ? dealiasResponse(entity) : null
     },
     async raw(query, variables) {

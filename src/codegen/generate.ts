@@ -94,6 +94,12 @@ function isListType(type: TypeRef): boolean {
   return false
 }
 
+/** Convert PascalCase GraphQL type name to UPPER_SNAKE_CASE for constant suffix.
+ *  e.g. "NodeArticleDetail" → "NODE_ARTICLE_DETAIL". */
+function typeNameToSnakeUpper(name: string): string {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()
+}
+
 function gqlTypeToTS(type: TypeRef, schema: IntrospectionSchema): string {
   if (!type) return 'any'
   if (type.kind === 'NON_NULL') return gqlTypeToTS(type.ofType!, schema)
@@ -672,13 +678,9 @@ export function generateClientCode(schema: IntrospectionSchema): string {
   )
 
   if (pageTypes.length) {
-    lines.push('// ─── Page Query (with full paragraph content) ──────────────────────\n')
-    lines.push('export const PAGE_QUERY = `')
-    lines.push('  query ($path: String!) {')
-    lines.push('    route(path: $path) {')
-    lines.push('      ... on RouteInternal {')
-    lines.push('        entity {')
-
+    // Build per-bundle entity fragments once — reused for both the legacy
+    // mega-PAGE_QUERY and the new per-bundle PAGE_QUERY_* variants.
+    const perBundleFragments: Array<{ type: typeof pageTypes[number]; fragment: string }> = []
     for (const type of pageTypes) {
       const nonContentFields = (type.fields ?? [])
         .filter(f => f.name !== 'content' && !SKIP_FIELDS.has(f.name) && !BASE_NODE_FIELDS.has(f.name))
@@ -704,9 +706,67 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       }
 
       const allFields = nonContentFields ? ` ${nonContentFields}` : ''
-      lines.push(`          ... on ${type.name} { __typename id title path created { time } changed { time }${allFields} ${contentSelection} }`)
+      perBundleFragments.push({
+        type,
+        fragment: `... on ${type.name} { __typename id title path created { time } changed { time }${allFields} ${contentSelection} }`,
+      })
     }
 
+    // Per-bundle slim queries — Drupal's GraphQL resolver still walks every
+    // fragment in the entity { ... } selection, even ones that don't match the
+    // resolved node type, so the legacy single PAGE_QUERY (containing all 8
+    // bundles' paragraph trees) can take 10× longer than necessary on slow
+    // hosting like Pantheon multidev. Emit one slim query per bundle so the
+    // typed client can route to the variant that matches the page's type.
+    lines.push('// ─── Per-bundle Page Queries (slim — one fragment each) ──────────────\n')
+    for (const { type, fragment } of perBundleFragments) {
+      const constName = `PAGE_QUERY_${typeNameToSnakeUpper(type.name)}`
+      lines.push(`export const ${constName} = \``)
+      lines.push('  query ($path: String!) {')
+      lines.push('    route(path: $path) {')
+      lines.push('      ... on RouteInternal {')
+      lines.push('        entity {')
+      lines.push(`          ${fragment}`)
+      lines.push('        }')
+      lines.push('      }')
+      lines.push('    }')
+      lines.push('  }')
+      lines.push('`\n')
+    }
+
+    // Lookup map: __typename → slim query. getPage() probes the type with a
+    // tiny query, then runs the matching slim variant. Falls back to the
+    // legacy mega-query if the type isn't recognized.
+    lines.push('export const PAGE_QUERY_BY_TYPE: Record<string, string> = {')
+    for (const { type } of perBundleFragments) {
+      lines.push(`  ${JSON.stringify(type.name)}: PAGE_QUERY_${typeNameToSnakeUpper(type.name)},`)
+    }
+    lines.push('}\n')
+
+    // Tiny probe query — used to discover the entity's __typename in ~50ms
+    // before running the heavier per-bundle slim query.
+    lines.push('export const PAGE_TYPE_PROBE = `')
+    lines.push('  query ($path: String!) {')
+    lines.push('    route(path: $path) {')
+    lines.push('      ... on RouteInternal {')
+    lines.push('        entity { __typename }')
+    lines.push('      }')
+    lines.push('    }')
+    lines.push('  }')
+    lines.push('`\n')
+
+    // Legacy mega-PAGE_QUERY — kept for backwards compatibility with code
+    // that imports PAGE_QUERY directly. New callers should prefer the typed
+    // client's getPage() which uses the slim per-bundle variants.
+    lines.push('// ─── Page Query (legacy — single mega-query, all bundles) ────────────\n')
+    lines.push('export const PAGE_QUERY = `')
+    lines.push('  query ($path: String!) {')
+    lines.push('    route(path: $path) {')
+    lines.push('      ... on RouteInternal {')
+    lines.push('        entity {')
+    for (const { fragment } of perBundleFragments) {
+      lines.push(`          ${fragment}`)
+    }
     lines.push('        }')
     lines.push('      }')
     lines.push('    }')
