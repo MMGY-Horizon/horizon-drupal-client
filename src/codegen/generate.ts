@@ -80,6 +80,53 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
 
 const BASE_NODE_FIELDS = new Set(['id', 'title', 'path', 'created', 'changed'])
 
+// Field names denied inside NodeCard fragments. Categorized to make the
+// boundary maintainable as the schema evolves.
+//
+// The principle: a NodeCard fragment is a node payload sized for CARD
+// rendering — a brief, scannable presentation of an entity. Fields used
+// only by full DETAIL-PAGE rendering live on the parent node via
+// `_source` and should not be re-fetched inside every paragraph node-ref.
+// Including them here would multiply query size linearly across every
+// route query × every paragraph × every member-node type, which we saw
+// blow the generated client past 7 MB in one experiment.
+//
+// Add a field here ONLY when it's verified to be (a) non-card-relevant
+// for every known consumer and (b) reachable through the detail page's
+// `_source` path. Err toward inclusion (smaller deny list) when in
+// doubt — a missing card field is a render bug, a slightly-larger query
+// is just bytes.
+const NODE_CARD_DENY_FIELD_NAMES = new Set([
+  // Recursion risk — loops back into the paragraph union we came from.
+  'paragraphs',
+
+  // Long-form authored content — heavy and never rendered on a card.
+  'body',
+  'terms',
+  'parking',
+  'reservations',
+
+  // Detail-page contact/operational data — surfaced by BusinessOverview,
+  // EventOverview, etc., via `_source`. Never rendered on a card.
+  'mainPhone',
+  'mainWebsite',
+  'bookingWebsite',
+  'email',
+  'hours',
+  'paymentMethods',
+  'accessibility',
+  'redeemUrl',
+
+  // Detail-page review data — surfaced by Reviews block via `_source`.
+  'rating',
+  'noOfReviews',
+  'googleReviews',
+  'placeId',
+
+  // Internal admin / import id — never displayed.
+  'csvId',
+])
+
 // ── GraphQL → TypeScript type mapping ────────────────────────────────
 
 function unwrapTypeName(type: TypeRef): string {
@@ -266,8 +313,11 @@ function buildFieldSelection(
   // Paragraph union — always use the full aliased shape so that same-named
   // fields across bundles with different nullability can coexist, and so that
   // composite subfields (Text, Link, DateRange, …) get proper subselections.
+  // Pass through buildFieldSelection's depth: if we're already inside a
+  // node-union-expansion chain (depth > 0), the nested paragraph body emits
+  // sparse node refs to bound query size.
   if (isParagraphUnion(schemaType)) {
-    return `${field.name} { ${buildParagraphUnionBody(schemaType, schema)} }`
+    return `${field.name} { ${buildParagraphUnionBody(schemaType, schema, depth)} }`
   }
 
   // Node-reference union — only expand members at the top level. Nested
@@ -326,7 +376,20 @@ function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number,
  * This is the ONLY shape we emit for paragraph unions, at any depth. The runtime
  * dealiasResponse() walks the response recursively and strips the per-type prefixes.
  */
-function buildParagraphUnionBody(unionType: IntrospectionType, schema: IntrospectionSchema): string {
+/**
+ * @param depth   Paragraph-body depth in the surrounding query. `0` for the
+ *                top-level body (e.g. `NodeLanding.content`); `>0` when the
+ *                body is reached transitively through a node-union field's
+ *                full expansion (e.g. `NodeDealDetail.business.<NodeX>.content`).
+ *                Used to gate NodeCard fragment emission — only the top-level
+ *                body gets rich node selections; deeper bodies fall back to
+ *                sparse refs to keep per-bundle query size bounded.
+ */
+function buildParagraphUnionBody(
+  unionType: IntrospectionType,
+  schema: IntrospectionSchema,
+  depth = 0,
+): string {
   const fragments = (unionType.possibleTypes ?? []).map(pt => {
     const pType = schema.types.find(t => t.name === pt.name)
     if (!pType?.fields) return `... on ${pt.name} { __typename id }`
@@ -337,7 +400,7 @@ function buildParagraphUnionBody(unionType: IntrospectionType, schema: Introspec
     const pFields = pType.fields
       .filter(f => !SKIP_FIELDS.has(f.name))
       .filter(f => !f.args?.length)
-      .map(f => buildParagraphFieldSelection(f, schema, prefix))
+      .map(f => buildParagraphFieldSelection(f, schema, prefix, depth))
       .join(' ')
 
     return `... on ${pt.name} { __typename ${pFields} }`
@@ -351,6 +414,126 @@ function isParagraphUnion(type: IntrospectionType): boolean {
     && type.possibleTypes.every(pt => pt.name.startsWith('Paragraph'))
 }
 
+// ── NodeCard fragment (rich nested-node selection inside paragraphs) ─
+
+/**
+ * Build inline fragments for each possible NodeX in a node-union, emitting
+ * a "card fragment" per node type: every safe scalar + one-level composite
+ * expansion (media, term, address, geofield, date-range, …), bounded so the
+ * query stays finite and recursion-free.
+ *
+ * Used for node-union references that appear inside paragraph fields. The
+ * prior selection here was `{ ... on NodeInterface { id title path } }`,
+ * which left card-rendering paragraph adapters with sparse stubs and no
+ * way to render image, excerpt, geo, taxonomy, or any other rich field
+ * the consumer's mappers depend on.
+ *
+ * Safety rails:
+ *   - Walks each NodeX in the union via introspection — new node types pick
+ *     up coverage automatically with no codegen edit.
+ *   - One-hop guard on nested node unions: if a Node field is itself a node
+ *     union, collapse to sparse `{ id title path }` to terminate recursion.
+ *   - Deny paragraph unions entirely — would otherwise loop Node→Paragraph→Node.
+ *   - Composite objects expand one level deep (matching the existing
+ *     pattern in buildParagraphFieldSelection for sibling fields like
+ *     Address/Geofield/DateRange), enough for DateRange.start.timestamp
+ *     but not enough for runaway expansion.
+ *   - Skip fields with required args and the small NODE_CARD_DENY_FIELD_NAMES
+ *     list (paragraphs, body).
+ */
+function buildNodeCardFragments(unionType: IntrospectionType, schema: IntrospectionSchema): string {
+  const fragments = (unionType.possibleTypes ?? []).map(pt => {
+    const memberType = schema.types.find(t => t.name === pt.name)
+    if (!memberType?.fields) return `... on ${pt.name} { __typename id }`
+
+    const sub = memberType.fields
+      .filter(f => !SKIP_FIELDS.has(f.name))
+      .filter(f => !NODE_CARD_DENY_FIELD_NAMES.has(f.name))
+      .filter(f => !f.args?.length)
+      .map(f => buildNodeCardFieldSelection(f, schema))
+      .filter((s): s is string => !!s)
+
+    return `... on ${pt.name} { __typename ${sub.join(' ')} }`
+  })
+  return fragments.join(' ')
+}
+
+/**
+ * Field selection inside a NodeCard fragment. Mirrors the composite-handling
+ * of buildParagraphFieldSelection (one-level scalar/composite expansion for
+ * common Drupal object types) but with hard stops on anything that could
+ * recurse: paragraph unions return null (skipped), nested node unions
+ * collapse to the sparse selection.
+ *
+ * Returns null when the field can't be safely expanded; callers filter
+ * nulls from the resulting selection.
+ */
+function buildNodeCardFieldSelection(field: IntrospectionField, schema: IntrospectionSchema): string | null {
+  const typeName = unwrapTypeName(field.type)
+  const schemaType = schema.types.find(t => t.name === typeName)
+
+  // Scalar / enum
+  if (!schemaType || schemaType.kind === 'SCALAR' || schemaType.kind === 'ENUM') {
+    return field.name
+  }
+
+  // Term union → name only
+  if (isTermUnion(field.type, schema)) {
+    return `${field.name} { ... on TermInterface { name } }`
+  }
+
+  // Media union → image url / video url
+  if (isMediaUnion(field.type, schema)) {
+    return `${field.name} { ${buildMediaFragments(field.type, schema)} }`
+  }
+
+  // Paragraph union → DENY. Would re-enter the paragraph machinery.
+  if (schemaType.kind === 'UNION' && schemaType.possibleTypes?.some(pt => pt.name.startsWith('Paragraph'))) {
+    return null
+  }
+
+  // Nested node union → one-hop guard. Sparse selection only.
+  if (schemaType.kind === 'UNION' && schemaType.possibleTypes?.some(pt => pt.name.startsWith('Node'))) {
+    return `${field.name} { ... on NodeInterface { id title path } }`
+  }
+
+  // OBJECT (Address, Geofield, DateRange, Text, Image, …) — one-level scalar
+  // expansion, with one nested OBJECT level to cover DateRange.start →
+  // DateTime { timestamp } pattern.
+  if (schemaType.kind === 'OBJECT') {
+    const scalars = (schemaType.fields ?? [])
+      .filter(f => !SKIP_FIELDS.has(f.name) && !f.args?.length)
+      .map(f => {
+        const n = unwrapTypeName(f.type)
+        const t = schema.types.find(s => s.name === n)
+        if (!t || t.kind === 'SCALAR' || t.kind === 'ENUM') return f.name
+        if (t.kind === 'OBJECT') {
+          const inner = (t.fields ?? [])
+            .filter(sf => !SKIP_FIELDS.has(sf.name) && !sf.args?.length)
+            .filter(sf => {
+              const sn = unwrapTypeName(sf.type)
+              const st = schema.types.find(s => s.name === sn)
+              return !st || st.kind === 'SCALAR' || st.kind === 'ENUM'
+            })
+            .map(sf => sf.name)
+          return inner.length > 0 ? `${f.name} { ${inner.join(' ')} }` : null
+        }
+        // Media/term unions inside the object — keep them simple.
+        if (t.kind === 'UNION' && isTermUnion(f.type, schema)) {
+          return `${f.name} { ... on TermInterface { name } }`
+        }
+        if (t.kind === 'UNION' && isMediaUnion(f.type, schema)) {
+          return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
+        }
+        return null
+      })
+      .filter((s): s is string => !!s)
+    return scalars.length > 0 ? `${field.name} { ${scalars.join(' ')} }` : null
+  }
+
+  return null
+}
+
 // ── Paragraph-specific field builder (conservative) ──────────────────
 
 /**
@@ -358,7 +541,21 @@ function isParagraphUnion(type: IntrospectionType): boolean {
  * Uses a flat strategy: expands fieldset children with scalar fields only,
  * uses simplified patterns for media/term unions.
  */
-function buildParagraphFieldSelection(field: IntrospectionField, schema: IntrospectionSchema, aliasPrefix?: string): string {
+/**
+ * @param depth   Paragraph-body depth in the surrounding query (see
+ *                buildParagraphUnionBody). Threaded through so that the
+ *                node-union case below can switch between the rich
+ *                NodeCard fragment expansion (top-level body, depth 0)
+ *                and the sparse `{ id title path }` selection (nested
+ *                bodies, depth > 0) — bounding query size without
+ *                losing card-rendering data where it matters most.
+ */
+function buildParagraphFieldSelection(
+  field: IntrospectionField,
+  schema: IntrospectionSchema,
+  aliasPrefix?: string,
+  depth = 0,
+): string {
   const typeName = unwrapTypeName(field.type)
   const schemaType = schema.types.find(t => t.name === typeName)
 
@@ -373,9 +570,19 @@ function buildParagraphFieldSelection(field: IntrospectionField, schema: Introsp
   // Use alias for non-scalar fields too to prevent union conflicts
   const alias = aliasPrefix && field.name !== 'id' ? `${aliasPrefix}_${field.name}: ` : ''
 
-  // Node union → basic node fields
+  // Node union inside a paragraph → emit a rich NodeCard fragment per
+  // possible Node type AT THE TOP-LEVEL paragraph body only. Deeper bodies
+  // (reached when an outer node-union field at depth 0 expanded its members,
+  // each of which has its own `content` paragraphs field — e.g.
+  // NodeDealDetail.business.NodeX.content) fall back to the sparse
+  // `{ id title path }` selection. Rich expansion at every nesting level
+  // multiplies query size 7-10× per level; the top-level body is where the
+  // card-rendering adapters actually consume the data.
   if (schemaType.kind === 'UNION' && schemaType.possibleTypes?.some(pt => pt.name.startsWith('Node'))) {
-    return `${alias}${field.name} { ... on NodeInterface { id title path } }`
+    if (depth > 0) {
+      return `${alias}${field.name} { ... on NodeInterface { id title path } }`
+    }
+    return `${alias}${field.name} { ${buildNodeCardFragments(schemaType, schema)} }`
   }
 
   // Term union → simple name
