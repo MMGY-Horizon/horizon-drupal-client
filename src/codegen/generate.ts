@@ -47,7 +47,7 @@ const SKIP_FIELDS = new Set([
   'revisionTranslationAffected', 'metatag', 'author',
 ])
 
-// Term-only unions get simplified to `... on TermInterface { name }` in queries
+// Term-only unions get simplified to `${termSpread()}` in queries
 function isTermUnion(type: TypeRef, schema: IntrospectionSchema): boolean {
   const name = unwrapTypeName(type)
   const t = schema.types.find(s => s.name === name)
@@ -63,19 +63,87 @@ function isMediaUnion(type: TypeRef, schema: IntrospectionSchema): boolean {
   return t.possibleTypes.every(pt => pt.name.startsWith('Media'))
 }
 
-/** Build media inline fragments for only the media types present in the schema union */
+// ── Named-fragment registry ──────────────────────────────────────────
+//
+// The repeated leaf/card selections (`${termSpread()}`,
+// media URLs, per-node "card" payloads) were previously INLINED at every
+// occurrence — thousands of times across the generated queries, blowing
+// PAGE_QUERY past 2.7 MB and timing out slow hosts. Instead we emit each
+// repeated selection ONCE as a named fragment and reference it with
+// `...FragName`; `fragmentClosure()` then appends only the fragments a given
+// query (transitively) uses. Response shapes are identical, so the runtime
+// `dealiasResponse()` is unaffected.
+//
+// Reset at the top of each generateClientCode() run.
+let fragmentDefs = new Map<string, string>()
+
+function registerFragment(name: string, def: string): string {
+  if (!fragmentDefs.has(name)) fragmentDefs.set(name, def)
+  return `...${name}`
+}
+
+/** `...FragTermName` — `fragment FragTermName on TermInterface { name }` */
+function termSpread(): string {
+  return registerFragment(
+    'FragTermName',
+    'fragment FragTermName on TermInterface { name }',
+  )
+}
+
+/**
+ * Spread the media fragments for the media types present in this union, e.g.
+ * `...FragMediaImage ...FragMediaVideo`. Replaces the old inlined
+ * buildMediaFragments() body; same emitted selection, deduped.
+ */
 function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string {
   const name = unwrapTypeName(type)
   const t = schema.types.find(s => s.name === name)
-  const fragments: string[] = []
-  if (t?.possibleTypes) {
-    for (const pt of t.possibleTypes) {
-      if (pt.name === 'MediaImage') fragments.push('... on MediaImage { mediaImage { url } }')
-      if (pt.name === 'MediaVideo') fragments.push('... on MediaVideo { mediaVideoFile { url } }')
-    }
+  const spreads: string[] = []
+  const present = new Set((t?.possibleTypes ?? []).map(p => p.name))
+  if (present.has('MediaImage')) {
+    spreads.push(registerFragment('FragMediaImage', 'fragment FragMediaImage on MediaImage { mediaImage { url } }'))
+  }
+  if (present.has('MediaVideo')) {
+    spreads.push(registerFragment('FragMediaVideo', 'fragment FragMediaVideo on MediaVideo { mediaVideoFile { url } }'))
   }
   // Fallback if union type not found (shouldn't happen if isMediaUnion passed)
-  return fragments.length > 0 ? fragments.join(' ') : '... on MediaImage { mediaImage { url } }'
+  return spreads.length > 0
+    ? spreads.join(' ')
+    : registerFragment('FragMediaImage', 'fragment FragMediaImage on MediaImage { mediaImage { url } }')
+}
+
+/**
+ * Compute the transitive set of `...FragName` references in a query body and
+ * return their definitions (each once). Guarantees a document defines exactly
+ * the fragments it uses — satisfying GraphQL's KnownFragmentNames AND
+ * NoUnusedFragments validation rules.
+ */
+function fragmentClosure(queryBody: string): string {
+  const used = new Set<string>()
+  const stack: string[] = []
+  const scan = (s: string) => {
+    for (const m of s.matchAll(/\.\.\.(Frag\w+)/g)) {
+      if (!used.has(m[1])) {
+        used.add(m[1])
+        stack.push(m[1])
+      }
+    }
+  }
+  scan(queryBody)
+  while (stack.length) {
+    const def = fragmentDefs.get(stack.pop()!)
+    if (def) scan(def)
+  }
+  return [...used]
+    .map(n => fragmentDefs.get(n))
+    .filter((d): d is string => !!d)
+    .join('\n')
+}
+
+/** Append a query body's transitive fragment defs (if any) below it. */
+function withFragments(queryBody: string): string {
+  const frags = fragmentClosure(queryBody)
+  return frags ? `${queryBody}\n\n${frags}\n` : queryBody
 }
 
 const BASE_NODE_FIELDS = new Set(['id', 'title', 'path', 'created', 'changed'])
@@ -231,7 +299,7 @@ function buildCompositeSubselection(
 
     // Handle common unions inline so Address/Media fields still resolve.
     if (fType.kind === 'UNION' && isTermUnion(f.type, schema)) {
-      parts.push(`${f.name} { ... on TermInterface { name } }`)
+      parts.push(`${f.name} { ${termSpread()} }`)
       continue
     }
     if (fType.kind === 'UNION' && isMediaUnion(f.type, schema)) {
@@ -302,7 +370,7 @@ function buildFieldSelection(
 
   // Term union — simplified to TermInterface
   if (schemaType.kind === 'UNION' && isTermUnion(field.type, schema)) {
-    return `${field.name} { ... on TermInterface { name } }`
+    return `${field.name} { ${termSpread()} }`
   }
 
   // Media union — simplified to MediaImage/MediaVideo
@@ -442,20 +510,28 @@ function isParagraphUnion(type: IntrospectionType): boolean {
  *     list (paragraphs, body).
  */
 function buildNodeCardFragments(unionType: IntrospectionType, schema: IntrospectionSchema): string {
-  const fragments = (unionType.possibleTypes ?? []).map(pt => {
-    const memberType = schema.types.find(t => t.name === pt.name)
-    if (!memberType?.fields) return `... on ${pt.name} { __typename id }`
-
-    const sub = memberType.fields
-      .filter(f => !SKIP_FIELDS.has(f.name))
-      .filter(f => !NODE_CARD_DENY_FIELD_NAMES.has(f.name))
-      .filter(f => !f.args?.length)
-      .map(f => buildNodeCardFieldSelection(f, schema))
-      .filter((s): s is string => !!s)
-
-    return `... on ${pt.name} { __typename ${sub.join(' ')} }`
+  // Each node type's card selection is constant (no aliases, no depth variance —
+  // emitted at depth 0 only), so register one named fragment per node type and
+  // spread it. The same `FragCard_NodeX` is reused everywhere this node type
+  // appears as a card ref, which is where most of the per-bundle query bloat was.
+  const spreads = (unionType.possibleTypes ?? []).map(pt => {
+    const fragName = `FragCard_${pt.name}`
+    if (!fragmentDefs.has(fragName)) {
+      const memberType = schema.types.find(t => t.name === pt.name)
+      const body = !memberType?.fields
+        ? '__typename id'
+        : `__typename ${memberType.fields
+            .filter(f => !SKIP_FIELDS.has(f.name))
+            .filter(f => !NODE_CARD_DENY_FIELD_NAMES.has(f.name))
+            .filter(f => !f.args?.length)
+            .map(f => buildNodeCardFieldSelection(f, schema))
+            .filter((s): s is string => !!s)
+            .join(' ')}`
+      fragmentDefs.set(fragName, `fragment ${fragName} on ${pt.name} { ${body} }`)
+    }
+    return `...${fragName}`
   })
-  return fragments.join(' ')
+  return spreads.join(' ')
 }
 
 /**
@@ -479,7 +555,7 @@ function buildNodeCardFieldSelection(field: IntrospectionField, schema: Introspe
 
   // Term union → name only
   if (isTermUnion(field.type, schema)) {
-    return `${field.name} { ... on TermInterface { name } }`
+    return `${field.name} { ${termSpread()} }`
   }
 
   // Media union → image url / video url
@@ -520,7 +596,7 @@ function buildNodeCardFieldSelection(field: IntrospectionField, schema: Introspe
         }
         // Media/term unions inside the object — keep them simple.
         if (t.kind === 'UNION' && isTermUnion(f.type, schema)) {
-          return `${f.name} { ... on TermInterface { name } }`
+          return `${f.name} { ${termSpread()} }`
         }
         if (t.kind === 'UNION' && isMediaUnion(f.type, schema)) {
           return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
@@ -587,7 +663,7 @@ function buildParagraphFieldSelection(
 
   // Term union → simple name
   if (isTermUnion(field.type, schema)) {
-    return `${alias}${field.name} { ... on TermInterface { name } }`
+    return `${alias}${field.name} { ${termSpread()} }`
   }
 
   // Media union → image url
@@ -651,7 +727,7 @@ function buildParagraphFieldSelection(
             const fTypeName = unwrapTypeName(f.type)
             const fType = schema.types.find(t => t.name === fTypeName)
             if (!fType || fType.kind === 'SCALAR' || fType.kind === 'ENUM') return f.name
-            if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
+            if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
             if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
             if (fType.kind === 'OBJECT' && (fType.fields?.length ?? 0) <= 8) {
               const scalars = (fType.fields ?? []).filter(sf => !SKIP_FIELDS.has(sf.name)).filter(sf => { const n = unwrapTypeName(sf.type); const t = schema.types.find(s => s.name === n); return !t || t.kind === 'SCALAR' }).map(sf => sf.name)
@@ -677,6 +753,10 @@ function buildParagraphFieldSelection(
 // ── Main generator ───────────────────────────────────────────────────
 
 export function generateClientCode(schema: IntrospectionSchema): string {
+  // Fresh named-fragment registry per run (the module-level map persists across
+  // calls otherwise — harmless for a one-shot CLI, but keeps repeat calls clean).
+  fragmentDefs = new Map()
+
   const lines: string[] = [FILE_HEADER]
 
   // Collect entity types
@@ -817,7 +897,7 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       .filter(f => f.name !== 'content') // skip paragraph content in list queries
       .filter(f => !f.args?.length)
       .map(f => {
-        if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
+        if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
         if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
         return buildFieldSelection(f, schema, 0, 2)
       })
@@ -825,20 +905,23 @@ export function generateClientCode(schema: IntrospectionSchema): string {
 
     const fragment = customFields ? `\n          ... on ${type.name} { ${customFields} }` : ''
 
+    const listQuery = `query ($first: Int, $after: Cursor, $sortKey: ConnectionSortKeys, $reverse: Boolean) {
+      ${plural}(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse) {
+        nodes {
+          __typename id title path created { time } changed { time }${fragment}
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`
+    const singleQuery = `query ($id: ID!) {
+      node(id: $id) {
+        __typename id title path created { time } changed { time }${fragment}
+      }
+    }`
+
     lines.push(`  ${type.name}: {`)
-    lines.push(`    list: \`query ($first: Int, $after: Cursor, $sortKey: ConnectionSortKeys, $reverse: Boolean) {`)
-    lines.push(`      ${plural}(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse) {`)
-    lines.push(`        nodes {`)
-    lines.push(`          __typename id title path created { time } changed { time }${fragment}`)
-    lines.push(`        }`)
-    lines.push(`        pageInfo { hasNextPage endCursor }`)
-    lines.push(`      }`)
-    lines.push(`    }\`,`)
-    lines.push(`    single: \`query ($id: ID!) {`)
-    lines.push(`      node(id: $id) {`)
-    lines.push(`        __typename id title path created { time } changed { time }${fragment}`)
-    lines.push(`      }`)
-    lines.push(`    }\`,`)
+    lines.push(`    list: \`${withFragments(listQuery)}\`,`)
+    lines.push(`    single: \`${withFragments(singleQuery)}\`,`)
     lines.push(`  },`)
   }
   lines.push('} as const\n')
@@ -846,35 +929,39 @@ export function generateClientCode(schema: IntrospectionSchema): string {
   // ── Route query (simple — no paragraphs) ──────────────────────
 
   lines.push('// ─── Route Query (simple entity resolution — no paragraph content) ──\n')
+  const routeEntityFragments = nodeTypes
+    .map(type => {
+      // Skip content/paragraph fields in route query — use PAGE_QUERY for those
+      const customFields = (type.fields ?? [])
+        .filter(f => !SKIP_FIELDS.has(f.name) && !BASE_NODE_FIELDS.has(f.name))
+        .filter(f => f.name !== 'content') // skip paragraph content
+        .filter(f => !f.args?.length)
+        .map(f => {
+          // Simplified: term → name, media → url, scalars only
+          if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
+          if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
+          const tn = unwrapTypeName(f.type)
+          const st = schema.types.find(t => t.name === tn)
+          if (!st || st.kind === 'SCALAR' || st.kind === 'ENUM') return f.name
+          // Use buildFieldSelection for proper recursion (handles DateRange → DateTime → timestamp etc.)
+          return buildFieldSelection(f, schema, 0, 2)
+        })
+        .join(' ')
+      const allFields = customFields ? ` ${customFields}` : ''
+      return `          ... on ${type.name} { __typename id title path created { time } changed { time }${allFields} }`
+    })
+    .join('\n')
+  const routeBody = `  query ($path: String!) {
+    route(path: $path) {
+      ... on RouteInternal {
+        entity {
+${routeEntityFragments}
+        }
+      }
+    }
+  }`
   lines.push('export const ROUTE_QUERY = `')
-  lines.push('  query ($path: String!) {')
-  lines.push('    route(path: $path) {')
-  lines.push('      ... on RouteInternal {')
-  lines.push('        entity {')
-  for (const type of nodeTypes) {
-    // Skip content/paragraph fields in route query — use PAGE_QUERY for those
-    const customFields = (type.fields ?? [])
-      .filter(f => !SKIP_FIELDS.has(f.name) && !BASE_NODE_FIELDS.has(f.name))
-      .filter(f => f.name !== 'content') // skip paragraph content
-      .filter(f => !f.args?.length)
-      .map(f => {
-        // Simplified: term → name, media → url, scalars only
-        if (isTermUnion(f.type, schema)) return `${f.name} { ... on TermInterface { name } }`
-        if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
-        const tn = unwrapTypeName(f.type)
-        const st = schema.types.find(t => t.name === tn)
-        if (!st || st.kind === 'SCALAR' || st.kind === 'ENUM') return f.name
-        // Use buildFieldSelection for proper recursion (handles DateRange → DateTime → timestamp etc.)
-        return buildFieldSelection(f, schema, 0, 2)
-      })
-      .join(' ')
-    const allFields = customFields ? ` ${customFields}` : ''
-    lines.push(`          ... on ${type.name} { __typename id title path created { time } changed { time }${allFields} }`)
-  }
-  lines.push('        }')
-  lines.push('      }')
-  lines.push('    }')
-  lines.push('  }')
+  lines.push(withFragments(routeBody))
   lines.push('`\n')
 
   // ── Page query (deep — includes paragraph content) ──────────────
@@ -928,16 +1015,17 @@ export function generateClientCode(schema: IntrospectionSchema): string {
     lines.push('// ─── Per-bundle Page Queries (slim — one fragment each) ──────────────\n')
     for (const { type, fragment } of perBundleFragments) {
       const constName = `PAGE_QUERY_${typeNameToSnakeUpper(type.name)}`
+      const body = `  query ($path: String!) {
+    route(path: $path) {
+      ... on RouteInternal {
+        entity {
+          ${fragment}
+        }
+      }
+    }
+  }`
       lines.push(`export const ${constName} = \``)
-      lines.push('  query ($path: String!) {')
-      lines.push('    route(path: $path) {')
-      lines.push('      ... on RouteInternal {')
-      lines.push('        entity {')
-      lines.push(`          ${fragment}`)
-      lines.push('        }')
-      lines.push('      }')
-      lines.push('    }')
-      lines.push('  }')
+      lines.push(withFragments(body))
       lines.push('`\n')
     }
 
@@ -966,18 +1054,17 @@ export function generateClientCode(schema: IntrospectionSchema): string {
     // that imports PAGE_QUERY directly. New callers should prefer the typed
     // client's getPage() which uses the slim per-bundle variants.
     lines.push('// ─── Page Query (legacy — single mega-query, all bundles) ────────────\n')
-    lines.push('export const PAGE_QUERY = `')
-    lines.push('  query ($path: String!) {')
-    lines.push('    route(path: $path) {')
-    lines.push('      ... on RouteInternal {')
-    lines.push('        entity {')
-    for (const { fragment } of perBundleFragments) {
-      lines.push(`          ${fragment}`)
+    const pageBody = `  query ($path: String!) {
+    route(path: $path) {
+      ... on RouteInternal {
+        entity {
+${perBundleFragments.map(({ fragment }) => `          ${fragment}`).join('\n')}
+        }
+      }
     }
-    lines.push('        }')
-    lines.push('      }')
-    lines.push('    }')
-    lines.push('  }')
+  }`
+    lines.push('export const PAGE_QUERY = `')
+    lines.push(withFragments(pageBody))
     lines.push('`\n')
   }
 
