@@ -55,7 +55,7 @@ function isTermUnion(type: TypeRef, schema: IntrospectionSchema): boolean {
   return t.possibleTypes.every(pt => pt.name.startsWith('Term'))
 }
 
-// Media unions get simplified to `... on MediaImage { mediaImage { url } }`
+// Media unions get simplified to `... on MediaImage { mediaImage { url alt } [caption] }`
 function isMediaUnion(type: TypeRef, schema: IntrospectionSchema): boolean {
   const name = unwrapTypeName(type)
   const t = schema.types.find(s => s.name === name)
@@ -100,8 +100,15 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
   const t = schema.types.find(s => s.name === name)
   const spreads: string[] = []
   const present = new Set((t?.possibleTypes ?? []).map(p => p.name))
+  // `alt` is a universal subfield of the Image type, so always selected.
+  // `caption` is a top-level MediaImage field that only some schemas expose
+  // (e.g. media.image.field_caption) — gate it on introspection so a sync
+  // against a schema without it doesn't emit an invalid `caption` selection.
+  const hasCaption =
+    schema.types.find(s => s.name === 'MediaImage')?.fields?.some(f => f.name === 'caption') ?? false
+  const mediaImageDef = `fragment FragMediaImage on MediaImage { mediaImage { url alt }${hasCaption ? ' caption' : ''} }`
   if (present.has('MediaImage')) {
-    spreads.push(registerFragment('FragMediaImage', 'fragment FragMediaImage on MediaImage { mediaImage { url } }'))
+    spreads.push(registerFragment('FragMediaImage', mediaImageDef))
   }
   if (present.has('MediaVideo')) {
     spreads.push(registerFragment('FragMediaVideo', 'fragment FragMediaVideo on MediaVideo { mediaVideoFile { url } }'))
@@ -109,7 +116,7 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
   // Fallback if union type not found (shouldn't happen if isMediaUnion passed)
   return spreads.length > 0
     ? spreads.join(' ')
-    : registerFragment('FragMediaImage', 'fragment FragMediaImage on MediaImage { mediaImage { url } }')
+    : registerFragment('FragMediaImage', mediaImageDef)
 }
 
 /**
@@ -241,7 +248,7 @@ function gqlTypeToTS(type: TypeRef, schema: IntrospectionSchema): string {
   // Connection types → skip
   if (name.endsWith('Connection') || name.endsWith('Edge')) return 'any'
 
-  // Media union → MediaImage type (we only extract mediaImage.url in queries)
+  // Media union → MediaImage type (queries extract mediaImage.url/alt + optional caption)
   if (name === 'MediaUnion' || name === 'MediaImage') return 'MediaImage'
   if (name === 'MediaVideo') return 'MediaVideo'
 
