@@ -74,6 +74,8 @@ export interface MediaImage {
     width?: number
     height?: number
   }
+  /** Optional caption — only present when the schema exposes it (e.g. media.image.field_caption). */
+  caption?: string
 }
 
 /** Media video entity */
