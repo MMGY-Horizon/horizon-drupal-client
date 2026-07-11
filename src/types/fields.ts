@@ -83,4 +83,8 @@ export interface MediaVideo {
   mediaVideoFile?: {
     url: string
   }
+  /** Optional WebM rendition — only present when the schema exposes field_media_video_webm. */
+  mediaVideoWebm?: {
+    url: string
+  }
 }

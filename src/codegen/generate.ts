@@ -110,8 +110,13 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
   if (present.has('MediaImage')) {
     spreads.push(registerFragment('FragMediaImage', mediaImageDef))
   }
+  // `mediaVideoWebm` (an optional WebM rendition alongside the MP4) only
+  // exists on schemas whose media.video bundle carries field_media_video_webm
+  // — gate it on introspection like `caption` above.
+  const hasWebm =
+    schema.types.find(s => s.name === 'MediaVideo')?.fields?.some(f => f.name === 'mediaVideoWebm') ?? false
   if (present.has('MediaVideo')) {
-    spreads.push(registerFragment('FragMediaVideo', 'fragment FragMediaVideo on MediaVideo { mediaVideoFile { url } }'))
+    spreads.push(registerFragment('FragMediaVideo', `fragment FragMediaVideo on MediaVideo { mediaVideoFile { url }${hasWebm ? ' mediaVideoWebm { url }' : ''} }`))
   }
   // Fallback if union type not found (shouldn't happen if isMediaUnion passed)
   return spreads.length > 0
