@@ -911,6 +911,15 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       .map(f => {
         if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
         if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
+        // Node-reference unions stay sparse in list/single queries — list
+        // consumers (pools, cards) only need identity; full expansion here
+        // multiplied query size by every node bundle's field set (the
+        // event-list query hit 500KB when field_business was exposed).
+        const fSchemaType = schema.types.find(t => t.name === unwrapTypeName(f.type))
+        const fIsNodeUnion = fSchemaType?.kind === 'UNION'
+          && !!fSchemaType.possibleTypes?.length
+          && fSchemaType.possibleTypes.every(pt => pt.name.startsWith('Node'))
+        if (fIsNodeUnion) return `${f.name} { ... on NodeInterface { id title path } }`
         return buildFieldSelection(f, schema, 0, 2)
       })
       .join(' ')
