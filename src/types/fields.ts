@@ -66,6 +66,17 @@ export interface DateRange {
   end?: { timestamp: number }
 }
 
+/** Smart Date occurrence (horizon_smart_date GraphQL exposure).
+ *  Recurring events expose one entry per generated occurrence. */
+export interface SmartDate {
+  value?: number
+  endValue?: number
+  duration?: number
+  timezone?: string
+  rrule?: number
+  rruleIndex?: number
+}
+
 /** Media image entity (from GraphQL Compose MediaImage type) */
 export interface MediaImage {
   mediaImage?: {
