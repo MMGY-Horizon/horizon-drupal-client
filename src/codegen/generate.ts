@@ -433,8 +433,9 @@ function buildFieldSelection(
 }
 
 // Composite value objects that must always expand even when they exceed the
-// small-object field cap (Geofield has 10 subfields — lat/lon live there).
-const ALWAYS_EXPAND_OBJECTS = new Set(['Geofield'])
+// small-object field cap (Geofield/Geospatial have 10 subfields — lat/lon
+// live there; the schema uses either name depending on the host entity).
+const ALWAYS_EXPAND_OBJECTS = new Set(['Geofield', 'Geospatial'])
 
 function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number, maxDepth: number): boolean {
   if (depth > maxDepth) return false
