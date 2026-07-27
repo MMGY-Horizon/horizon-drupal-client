@@ -432,6 +432,10 @@ function buildFieldSelection(
   return field.name
 }
 
+// Composite value objects that must always expand even when they exceed the
+// small-object field cap (Geofield has 10 subfields — lat/lon live there).
+const ALWAYS_EXPAND_OBJECTS = new Set(['Geofield'])
+
 function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number, maxDepth: number): boolean {
   if (depth > maxDepth) return false
   const name = unwrapTypeName(type)
@@ -439,7 +443,7 @@ function isExpandable(type: TypeRef, schema: IntrospectionSchema, depth: number,
   if (!t) return true
   if (t.kind === 'SCALAR' || t.kind === 'ENUM') return true
   // Only expand small objects (prevents runaway expansion)
-  if (t.kind === 'OBJECT' && (t.fields?.length ?? 0) <= 8) return true
+  if (t.kind === 'OBJECT' && ((t.fields?.length ?? 0) <= 8 || ALWAYS_EXPAND_OBJECTS.has(name))) return true
   // Only expand unions at shallow depths
   if (t.kind === 'UNION' && depth <= 1) return true
   return false
@@ -741,7 +745,7 @@ function buildParagraphFieldSelection(
             if (!fType || fType.kind === 'SCALAR' || fType.kind === 'ENUM') return f.name
             if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
             if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
-            if (fType.kind === 'OBJECT' && (fType.fields?.length ?? 0) <= 8) {
+            if (fType.kind === 'OBJECT' && ((fType.fields?.length ?? 0) <= 8 || ALWAYS_EXPAND_OBJECTS.has(fTypeName))) {
               const scalars = (fType.fields ?? []).filter(sf => !SKIP_FIELDS.has(sf.name)).filter(sf => { const n = unwrapTypeName(sf.type); const t = schema.types.find(s => s.name === n); return !t || t.kind === 'SCALAR' }).map(sf => sf.name)
               return scalars.length ? `${f.name} { ${scalars.join(' ')} }` : f.name
             }
