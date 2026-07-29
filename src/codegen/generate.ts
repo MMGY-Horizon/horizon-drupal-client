@@ -221,6 +221,54 @@ function isListType(type: TypeRef): boolean {
   return false
 }
 
+// Types gqlTypeToTS resolves to an import from horizon-drupal-client (or a
+// primitive) rather than a generated interface — never emit these as
+// auxiliary interfaces.
+const IMPORTED_TS_TYPES = new Set([
+  'Text', 'TextSummary', 'Image', 'Link', 'DateTime', 'Address',
+  'Geofield', 'Geospatial', 'DateRange', 'SmartDate',
+  'MediaImage', 'MediaVideo', 'MediaUnion', 'Language', 'Cursor',
+])
+
+/**
+ * OBJECT types referenced by generated node/paragraph/term fields that are
+ * not themselves node/paragraph/term types and not covered by the static
+ * imports — e.g. `Webform` on ParagraphWebform (config-entity reference
+ * resolved by a schema extension). Without an emitted interface these field
+ * references dangle and the generated client fails to type-check.
+ * Recurses so nested objects (Webform → WebformSettings) are included.
+ */
+function collectAuxObjectTypes(
+  emittedTypes: IntrospectionType[],
+  schema: IntrospectionSchema,
+  generatedNames: Set<string>,
+): IntrospectionType[] {
+  const found = new Map<string, IntrospectionType>()
+  const visit = (name: string): void => {
+    if (
+      found.has(name) || generatedNames.has(name) || IMPORTED_TS_TYPES.has(name) ||
+      name.startsWith('Node') || name.startsWith('Paragraph') || name.startsWith('Term') ||
+      name.includes('Connection') || name.includes('Edge')
+    ) return
+    const t = schema.types.find(x => x.name === name)
+    if (!t || t.kind !== 'OBJECT' || !t.fields?.length) return
+    found.set(name, t)
+    for (const f of t.fields) {
+      if (SKIP_FIELDS.has(f.name) || f.args?.length) continue
+      visit(unwrapTypeName(f.type))
+    }
+  }
+  for (const type of emittedTypes) {
+    for (const field of type.fields ?? []) {
+      if (SKIP_FIELDS.has(field.name)) continue
+      const name = unwrapTypeName(field.type)
+      const t = schema.types.find(x => x.name === name)
+      if (t?.kind === 'OBJECT') visit(name)
+    }
+  }
+  return [...found.values()]
+}
+
 /** Convert PascalCase GraphQL type name to UPPER_SNAKE_CASE for constant suffix.
  *  e.g. "NodeArticleDetail" → "NODE_ARTICLE_DETAIL". */
 function typeNameToSnakeUpper(name: string): string {
@@ -864,6 +912,45 @@ export function generateClientCode(schema: IntrospectionSchema): string {
         if (SKIP_FIELDS.has(field.name) || ['id', 'name', 'path', 'description'].includes(field.name)) continue
         const tsType = gqlTypeToTS(field.type, schema)
         lines.push(`  ${field.name}?: ${tsType}`)
+      }
+      lines.push('}\n')
+    }
+  }
+
+  // ── Generate auxiliary object interfaces ───────────────────────
+  // Non-entity OBJECT types referenced by generated fields (e.g. Webform).
+  // Fields the query builder can't select (unions/interfaces, arg-taking
+  // fields) are typed `any` — raw() consumers may still receive them.
+
+  const auxTypes = collectAuxObjectTypes(
+    [...nodeTypes, ...paragraphTypes, ...termTypes],
+    schema,
+    generatedNames,
+  )
+  if (auxTypes.length) {
+    lines.push('// ─── Auxiliary Types ───────────────────────────────────────────────\n')
+    for (const type of auxTypes) {
+      lines.push(`export interface ${type.name} {`)
+      for (const field of type.fields ?? []) {
+        if (SKIP_FIELDS.has(field.name)) continue
+        if (field.args?.length) {
+          lines.push(`  ${field.name}?: any`)
+          continue
+        }
+        const fieldTypeName = unwrapTypeName(field.type)
+        const fieldType = schema.types.find(t => t.name === fieldTypeName)
+        const dangles =
+          fieldType &&
+          (fieldType.kind === 'UNION' || fieldType.kind === 'INTERFACE') &&
+          !unionTypes.some(u => u.name === fieldTypeName) &&
+          !IMPORTED_TS_TYPES.has(fieldTypeName)
+        const tsType = dangles ? 'any' : gqlTypeToTS(field.type, schema)
+        const isList = isListType(field.type)
+        if (isList && !tsType.endsWith('[]')) {
+          lines.push(`  ${field.name}?: ${tsType}[]`)
+        } else {
+          lines.push(`  ${field.name}?: ${tsType}`)
+        }
       }
       lines.push('}\n')
     }
