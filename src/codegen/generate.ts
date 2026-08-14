@@ -106,7 +106,12 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
   // against a schema without it doesn't emit an invalid `caption` selection.
   const hasCaption =
     schema.types.find(s => s.name === 'MediaImage')?.fields?.some(f => f.name === 'caption') ?? false
-  const mediaImageDef = `fragment FragMediaImage on MediaImage { mediaImage { url alt }${hasCaption ? ' caption' : ''} }`
+  // `imageBlur` is a stored LQIP data-URI that only some schemas expose
+  // (media.image.field_image_blur via graphql_compose) — gate it on
+  // introspection like `caption` above.
+  const hasImageBlur =
+    schema.types.find(s => s.name === 'MediaImage')?.fields?.some(f => f.name === 'imageBlur') ?? false
+  const mediaImageDef = `fragment FragMediaImage on MediaImage { mediaImage { url alt }${hasCaption ? ' caption' : ''}${hasImageBlur ? ' imageBlur' : ''} }`
   if (present.has('MediaImage')) {
     spreads.push(registerFragment('FragMediaImage', mediaImageDef))
   }
