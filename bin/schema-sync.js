@@ -15,7 +15,7 @@ async function main() {
   const args = process.argv.slice(2)
 
   if (args[0] !== 'sync') {
-    console.log('Usage: horizon-schema sync [--url <graphql-url>] [--out <output-dir>]')
+    console.log('Usage: horizon-schema sync [--url <graphql-url>] [--out <output-dir>] [--list-exclude <fields,comma-separated>]')
     process.exit(1)
   }
 
@@ -94,7 +94,15 @@ async function main() {
 
   // Step 3: Generate typed client
   const { generateClientCode } = require('../dist/codegen/generate')
-  const clientCode = generateClientCode(schema)
+  // --list-exclude a,b,c overrides the default detail-only fields dropped
+  // from the pool (`list:`) queries; pass an empty value to disable.
+  const listExcludeArg = args.indexOf('--list-exclude')
+  const generateOptions = {}
+  if (listExcludeArg !== -1) {
+    generateOptions.listExcludeFields = (args[listExcludeArg + 1] || '')
+      .split(',').map(v => v.trim()).filter(Boolean)
+  }
+  const clientCode = generateClientCode(schema, generateOptions)
   const clientPath = path.join(outDir, 'client.ts')
   fs.writeFileSync(clientPath, clientCode)
 

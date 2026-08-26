@@ -202,6 +202,14 @@ const NODE_CARD_DENY_FIELD_NAMES = new Set([
   'accessibility',
   'redeemUrl',
 
+  // Detail-page media + AI review prose — the gallery blocks and the
+  // Reviews block read them from the host node via `_source`; no card
+  // renders any of them (measured 2026-08-26 on lee-horizon: 67% of every
+  // pool byte).
+  'galleryImages',
+  'keyInsights',
+  'reviewSynthesis',
+
   // Detail-page review data — surfaced by Reviews block via `_source`.
   'rating',
   'noOfReviews',
@@ -211,6 +219,22 @@ const NODE_CARD_DENY_FIELD_NAMES = new Set([
   // Internal admin / import id — never displayed.
   'csvId',
 ])
+
+// Detail-only fields excluded from the generated pool (`list:`) queries.
+//
+// The generator emits one selection shape per bundle; using it verbatim for
+// both `list:` (pools, cards) and `single:` (detail pages) made every pool
+// item carry the detail page's payload. Measured on lee-horizon against
+// Pantheon (100 businesses, 1.18MB response): galleryImages 40%,
+// keyInsights 21%, reviewSynthesis 6% — 67% of every byte, none of it
+// rendered by a card. `single:` and the per-bundle page queries keep the
+// full shape. Override per site with `--list-exclude a,b,c` on the sync CLI
+// (or GenerateOptions.listExcludeFields).
+const DEFAULT_LIST_EXCLUDE_FIELD_NAMES = [
+  'galleryImages',
+  'keyInsights',
+  'reviewSynthesis',
+]
 
 // ── GraphQL → TypeScript type mapping ────────────────────────────────
 
@@ -822,7 +846,14 @@ function buildParagraphFieldSelection(
 
 // ── Main generator ───────────────────────────────────────────────────
 
-export function generateClientCode(schema: IntrospectionSchema): string {
+export interface GenerateOptions {
+  /** GraphQL field names dropped from the pool (`list:`) queries only.
+   *  Defaults to DEFAULT_LIST_EXCLUDE_FIELD_NAMES. */
+  listExcludeFields?: string[]
+}
+
+export function generateClientCode(schema: IntrospectionSchema, options: GenerateOptions = {}): string {
+  const listExclude = new Set(options.listExcludeFields ?? DEFAULT_LIST_EXCLUDE_FIELD_NAMES)
   // Fresh named-fragment registry per run (the module-level map persists across
   // calls otherwise — harmless for a one-shot CLI, but keeps repeat calls clean).
   fragmentDefs = new Map()
@@ -1001,10 +1032,11 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       ? `${base}es`
       : `${base}s`
 
-    const customFields = (type.fields ?? [])
+    const queryFields = (type.fields ?? [])
       .filter(f => !SKIP_FIELDS.has(f.name) && !BASE_NODE_FIELDS.has(f.name))
       .filter(f => f.name !== 'content') // skip paragraph content in list queries
       .filter(f => !f.args?.length)
+    const selectionFor = (fields: typeof queryFields) => fields
       .map(f => {
         if (isTermUnion(f.type, schema)) return `${f.name} { ${termSpread()} }`
         if (isMediaUnion(f.type, schema)) return `${f.name} { ${buildMediaFragments(f.type, schema)} }`
@@ -1021,12 +1053,19 @@ export function generateClientCode(schema: IntrospectionSchema): string {
       })
       .join(' ')
 
-    const fragment = customFields ? `\n          ... on ${type.name} { ${customFields} }` : ''
+    const fragmentFor = (fields: typeof queryFields) => {
+      const selection = selectionFor(fields)
+      return selection ? `\n          ... on ${type.name} { ${selection} }` : ''
+    }
+    // `single:` (detail pages) keeps the full shape; `list:` (pools, cards)
+    // drops the detail-only fields — see DEFAULT_LIST_EXCLUDE_FIELD_NAMES.
+    const fragment = fragmentFor(queryFields)
+    const listFragment = fragmentFor(queryFields.filter(f => !listExclude.has(f.name)))
 
     const listQuery = `query ($first: Int, $after: Cursor, $sortKey: ConnectionSortKeys, $reverse: Boolean) {
       ${plural}(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse) {
         nodes {
-          __typename id title path created { time } changed { time }${fragment}
+          __typename id title path created { time } changed { time }${listFragment}
         }
         pageInfo { hasNextPage endCursor }
       }
