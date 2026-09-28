@@ -120,8 +120,18 @@ function buildMediaFragments(type: TypeRef, schema: IntrospectionSchema): string
   // — gate it on introspection like `caption` above.
   const hasWebm =
     schema.types.find(s => s.name === 'MediaVideo')?.fields?.some(f => f.name === 'mediaVideoWebm') ?? false
+  // `mediaVideoPoster` (field_media_video_poster — a MediaUnion holding the
+  // poster image media) — gated on introspection like the two above. Without
+  // it a video hero has no server-rendered poster, so phones and
+  // reduced-motion visitors (who never mount the video) get a bare backdrop.
+  const hasPoster =
+    schema.types.find(s => s.name === 'MediaVideo')?.fields?.some(f => f.name === 'mediaVideoPoster') ?? false
   if (present.has('MediaVideo')) {
-    spreads.push(registerFragment('FragMediaVideo', `fragment FragMediaVideo on MediaVideo { mediaVideoFile { url }${hasWebm ? ' mediaVideoWebm { url }' : ''} }`))
+    // The poster selection nests FragMediaImage — register it even when the
+    // union itself has no bare MediaImage member, so the spread always
+    // resolves in fragmentClosure().
+    if (hasPoster) registerFragment('FragMediaImage', mediaImageDef)
+    spreads.push(registerFragment('FragMediaVideo', `fragment FragMediaVideo on MediaVideo { mediaVideoFile { url }${hasWebm ? ' mediaVideoWebm { url }' : ''}${hasPoster ? ' mediaVideoPoster { ...FragMediaImage }' : ''} }`))
   }
   // Fallback if union type not found (shouldn't happen if isMediaUnion passed)
   return spreads.length > 0
